@@ -7,33 +7,38 @@ import ctypes
 import json
 import time
 
-from seleniumbase.common.exceptions import NoSuchElementException as SBNoSuchElementException
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from seleniumbase.common.exceptions import (
+    NoSuchElementException as SBNoSuchElementException, WebDriverException as SBWebDriverException)
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from seleniumbase.undetected import Chrome
 from seleniumbase import Driver
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-
 job_title_selector = ".air3-line-clamp > h2 > a"  # Text could be embedded in the anchor tag or set as text attribute.
 post_time_selector = ".job-tile-header div small span:nth-child(2)"
 job_skills_selector = 'div[data-test="JobTileDetails"] div.air3-token-container span[data-test="token"] span'  # multi
 description_selector = "div.air3-line-clamp.is-clamped > p.mb-0"
-proposals_selector = 'section[data-test="ClientActivity"] > ul > li > span.value'  # When opening a specific job.
 
-payment_details_selector = "ul.job-tile-info-list.text-base-sm.mb-4"
-job_type_selector = payment_details_selector + " > li:nth-child(1)"
-experience_level_selector = payment_details_selector + " > li:nth-child(2)"
-time_estimate_or_budget_selector = payment_details_selector + " > li:nth-child(3) > strong:nth-child(2)"
-# Could be the time estimate of an hourly job or the budget of a fixed-price job.
+job_details_selector = "ul.job-tile-info-list.text-base-sm.mb-4"
+job_type_selector = job_details_selector + " > li:nth-child(1) > strong"
+experience_level_selector = job_details_selector + ' > li[data-test="experience-level"] > strong'
+time_estimate_selector = job_details_selector + ' > li[data-test="duration-label"] > strong:nth-child(2)'
+budget_selector = job_details_selector + ' > li[data-test="is-fixed-price"] > strong:nth-child(2)'
 
-client_location_selector = 'ul.ac-items.list-unstyled > li > strong'  # When opening a specific job.
-client_spent_selector = 'strong[data-qa="client-spend"] > span'  # When opening a specific job.
+# When opening a specific job.
+proposals_selector = 'ul.client-activity-items > li.ca-item > span.value'
+client_details_selector = "ul.ac-items.list-unstyled"
+client_location_selector = client_details_selector + ' > li:nth-child(1) > strong'
+client_jobs_posted_selector = client_details_selector + ' > li[data-qa="client-job-posting-stats"] > strong'
+client_hire_rate_selector = client_details_selector + ' > li[data-qa="client-job-posting-stats"] > div'
+client_hourly_rate_selector = client_details_selector + ' strong[data-qa="client-hourly-rate"]'
+client_spent_selector = client_details_selector + ' strong[data-qa="client-spend"] > span'
 
 job_back_arrow_selector = 'div.air3-slider-header > button.air3-slider-prev-btn.air3-slider-close-desktop > div'
 
 
-def split_list_into_chunks(lst, num_chunks) -> list[list]:
+def split_list_into_chunks(lst: list, num_chunks: int) -> list[list]:
     """
     Split a list into `num_chunks` chunks.
 
@@ -49,7 +54,7 @@ def split_list_into_chunks(lst, num_chunks) -> list[list]:
 
     Returns
     -------
-    chunks: list
+    chunks: list[list]
         A list of lists (chunks).
     """
     chunks = []
@@ -119,11 +124,6 @@ def construct_url(query: str, jobs_per_page: int = 10, start_page: int = 1) -> s
             f"&sort=recency")
 
 
-def parse_job_type(job_type: str) -> str:
-    """Returns 'Hourly' or 'Fixed'"""
-    return job_type.split(':')[0].split()[0]
-
-
 def parse_time(relative_time: str) -> float:
     """Upwork jobs post-dates are relative to the local time of the host, this function converts them as Unix time"""
     relative_time = relative_time.lower()
@@ -144,23 +144,15 @@ def parse_time(relative_time: str) -> float:
     return int(absolute_time.timestamp())
 
 
-def parse_time_estimate(time_estimate_or_budget: str) -> str | None:
-    """Returns the time estimate for hourly jobs (only the month part) or None in case of Fixed job."""
-    if "$" not in time_estimate_or_budget:
-        return time_estimate_or_budget.split(',')[0]  # Get just the time estimate.
-    return None
-
-
-def parse_budget(job_type: str, time_estimate_or_budget: str) -> int | None:
+def parse_budget(job_type: str, budget: str) -> int | None:
     """
-    Takes the job type (hourly, fixed-price) and time estimate/budget, which might be the budget in $ for a fixed-price
+    Takes the job type (hourly, fixed-price) budget, which might be the budget in $ for a fixed-price
     job or the estimated time of an hourly job.
     Returns the hourly rate for hourly jobs and the budget for fixed-price. Returns None if the hourly rate isn't
     specified.
     """
     job_type = job_type.lower()
     job_type = job_type.replace("$", "")
-    time_estimate_or_budget = time_estimate_or_budget.replace("$", "")
     if "hourly" in job_type:
         if ":" in job_type:
             hourly_rate = job_type.split(":")[1]
@@ -168,7 +160,8 @@ def parse_budget(job_type: str, time_estimate_or_budget: str) -> int | None:
             average_rate = int((float(max_rate) + float(min_rate)) / 2)
             return average_rate
         return None
-    return int(float(time_estimate_or_budget.replace(',', '')))
+    budget = budget.replace("$", "").split()[0]  # `split` is the easiest way to git rid of all whitespace.
+    return int(float(budget.replace(',', '')))
 
 
 def parse_total_spent(total_spent: str) -> int | None:
@@ -181,21 +174,25 @@ def parse_total_spent(total_spent: str) -> int | None:
     return int(total_spent)
 
 
-def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict:
+def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict[str, str | int | float | None]:
     """
     Parses one job listing (html) and returns a dictionary containing its information. The collected infromation is:
         - Job title
         - Job description
         - Job skills
         - Job post time as a UNIX timestamp
-        - Number of proposals
         - Job type (Hourly or Fixed)
         - Experience level (entry, intermediate, expert)
         - Time estimate (the estimated time the job is going to take, for example, 1-3 months for an hourly job
           or None for a fixed-price job)
         - Budget (The budget for a fixed-price job or the average hourly rate or None if it's not specified)
+    And the following if the job listing is public (only proposals and location are guaranteed to exist):
+        - Number of proposals
         - Client location
-        - Client total spent (if present)
+        - Client number of posted jobs
+        - Client hire rate
+        - Client average hourly rate
+        - Client total spent
 
     Parameters
     ----------
@@ -211,34 +208,50 @@ def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict:
     job_details: dict
         The job's details.
     """
-    job_type = job.select_one(job_type_selector).text.strip()
+    job_type = job.select_one(job_type_selector).text
+    xp_level = job.select_one(experience_level_selector)
+    time_estimate = job.select_one(time_estimate_selector)
+    budget = job.select_one(budget_selector)
+    if time_estimate:
+        time_estimate = time_estimate.text.split(',')[0]
+
     job_details = {
         "title": job.select_one(job_title_selector).text,
         "description": job.select_one(description_selector).text,
         "time": parse_time(job.select_one(post_time_selector).text),
         "skills": [skill.text for skill in job.select(job_skills_selector)],
-        "type": parse_job_type(job_type),
-        "experience_level": job.select_one(experience_level_selector).text,
-        "time_estimate": parse_time_estimate(job.select_one(time_estimate_or_budget_selector).text),
-        "budget": parse_budget(job_type, job.select_one(time_estimate_or_budget_selector).text.strip()),
+        "type": job_type.split(':')[0].split()[0],
+        "experience_level": xp_level.text if xp_level else None,
+        "time_estimate": time_estimate,
+        "budget": parse_budget(job_type, budget.text) if budget else None
     }
+
+    remaining_keys = (
+        "proposals", "client_location", "client_jobs_posted",
+        "client_hire_rate", "client_hourly_rate", "client_total_spent")
+    job_details.update({key: None for key in remaining_keys})  # Default as None because an error might occur.
 
     try:
         driver.execute_script("arguments[0].click();", driver.find_element(f"article:nth-child({index})"))
-        # Some jobs don't display unless you are logged in, hence the try block.
-        driver.wait_for_selector(client_location_selector, timeout=3)
+        driver.wait_for_selector(client_location_selector, timeout=1.5)
         job_soup = BeautifulSoup(driver.page_source, "html.parser")
+        job_details["proposals"] = job_soup.select_one(proposals_selector).text
         job_details["client_location"] = job_soup.select_one(client_location_selector).text
-        total_spent = job_soup.select_one(client_spent_selector)
-        if total_spent:
-            total_spent = parse_total_spent(total_spent.text)
-        job_details["client_total_spent"] = total_spent
-    except (SBNoSuchElementException, NoSuchElementException):
+        for key, selector, parse_func in zip(
+                remaining_keys[2:],
+                (client_jobs_posted_selector, client_hire_rate_selector,
+                 client_hourly_rate_selector, client_spent_selector),
+                (lambda e: int(e.replace(',', '')), lambda e: float(e[:-1]) / 100,
+                 lambda e: float(e[1:]), parse_total_spent)
+        ):
+            element = job_soup.select_one(selector)
+            job_details[key] = parse_func(element.text.split()[0]) if element else element
+    except (SBNoSuchElementException, NoSuchElementException):  # In case of a timeout or private job listing.
         pass
     try:
-        driver.wait_for_selector(job_back_arrow_selector, timeout=3)
+        driver.wait_for_selector(job_back_arrow_selector, timeout=1.5)
         driver.find_element(job_back_arrow_selector).click()
-    except (SBNoSuchElementException, NoSuchElementException):
+    except (SBWebDriverException, WebDriverException):
         pass
     sleep()  # Wait for the animation to finish.
     return job_details
@@ -304,14 +317,13 @@ class JobsScraper:
         self.workers = workers
 
         self.link_get_took = 0
-        # total_npages = self.get_total_number_of_result_pages()
-        total_npages = 111
+        total_npages = self.get_total_number_of_result_pages()
 
         # Upwork limits the number of pages the user can access, and the limit is dependent on the number of jobs per
         # page setting. Upwork won't load job listings for any page past the limit (e.g., page 102, jobs_per_page=50).
-        allowed_npages = {10: 501, 20: 251, 50: 101}[jobs_per_page]
+        allowed_npages = {10: 501, 20: 251, 50: 101}[self.jobs_per_page]
         self.last_allowed_page = min(total_npages, allowed_npages)
-        assert 0 < start_page <= self.last_allowed_page, f"`start_page` must be in [1, {self.last_allowed_page}]"
+        assert 0 < self.start_page <= self.last_allowed_page, f"`start_page` must be in [1, {self.last_allowed_page}]"
 
         maximum_allowed_npages_to_scrape = self.last_allowed_page - self.start_page + 1
         if pages_to_scrape and pages_to_scrape > maximum_allowed_npages_to_scrape:
@@ -321,33 +333,40 @@ class JobsScraper:
                 f"for more info about the limit.")
         self.pages_to_scrape = pages_to_scrape if pages_to_scrape else maximum_allowed_npages_to_scrape
 
-        self.jobs_details = []
+        self.pages_to_jobs: dict[str, dict[int, list[dict[str, str | int | float | None]]]] = {
+            'scrape': {}, 'update': {}}
         self.failed_pages = set()
 
-        self.seen_titles = set()
-        self.should_stop = False  # This is set to True when 5 or more consecutive jobs titles' exist in the list of
-        # scraped job titles, meaning the following jobs most probably have been scraped.
-        self.seen_page = None  # The page number where the aforementioned condition happened. Used to decide which
-        # threads should be terminated.
-        self.consecutive_seens = 0
-        self.seen_jobs = []
+        self.seen_descriptions = set()
+        self.seen_page = None
 
+        activate_workers = len(  # To get the actual number of how many workers there will be.
+            split_list_into_chunks(list(range(self.start_page, self.start_page + self.pages_to_scrape)), self.workers))
         estimated_number_of_jobs = self.pages_to_scrape * self.jobs_per_page
-        # Each job takes at most 3 seconds, and on at least 0.75 seconds, we just take the average of that (~1.8)
-        # (workers - 1) * 60 because each new worker apart from the first waits ~7.5 extra seconds before it start.
+        # Each job takes at most 4 seconds, and on at least 0.75 seconds, we just take the average of that (~2.4)
+        # workers * 7.5 because each new worker waits 5 to 10 extra seconds before it start.
         time_estimate = round(
             (self.link_get_took * self.pages_to_scrape +
-             1.8 * estimated_number_of_jobs +
-             (workers - 1) * 7.5) / 60 / workers, 1)
+             2.4 * estimated_number_of_jobs +
+             activate_workers * 7.5) / activate_workers / 60, 1)
         print(
             f"Scraping spec\n-------------\n"
             f"search query: {self.search_query}\n"
             f"pages to scrape: {self.pages_to_scrape}\n"
             f"estimated total number of jobs: {estimated_number_of_jobs}\n"
-            f"Retries when detected: {retries}\n"
-            f"Number of workers: {self.workers}\n"
-            f"ETA: {time_estimate:,} minutes\n"
+            f"Retries when detected: {self.retries}\n"
+            f"Number of workers: {activate_workers}\n"
+            f"ETA: {time_estimate} minutes\n"
             f"{f'Saving to {self.save_path}' if self.save_path else 'Not saving the results'}")
+
+    @property
+    def scraped_jobs(self) -> list[dict]:
+        """A list containing all the scraped jobs in the order they are presented with on Upwork."""
+        jobs = []
+        for action in ('update', 'scrape'):
+            for _, jobs_list in sorted(self.pages_to_jobs[action].items(), key=lambda x: x[0]):
+                jobs.extend(jobs_list)
+        return jobs
 
     def create_driver(self) -> Chrome:
         """Create selenium base undetected chrome driver instance."""
@@ -355,8 +374,7 @@ class JobsScraper:
 
     def get_url(self, driver: Chrome,  page_number: int) -> None:
         """
-        Loads the `page_number`th result page for the given `search_query` and `jobs_per_page`, then sleeps for a random
-        amount of time between 0.5 and 3 seconds after the page loads.
+        Loads the `page_number`th result page for the given `search_query` and `jobs_per_page`.
 
         Parameters
         ----------
@@ -367,34 +385,52 @@ class JobsScraper:
         """
         driver.get(construct_url(self.search_query, self.jobs_per_page, page_number))
 
+    def get_url_retry(self, driver: Chrome, page_number: int, msg: str | None = None) -> bool:
+        """
+        Same as `get_url` but retry the page if it fails whether because of a network error or a captcha.
+
+        Returns
+        -------
+        success: bool
+            True if the page loads successfully, False otherwise.
+        """
+        # The following code is to achieve retrying functionality, see https://stackoverflow.com/a/7663441/23524006
+        for retry in range(self.retries):
+            try:
+                if msg:
+                    time_print(f"{msg} (try {retry + 1}/{self.retries}).")
+                self.get_url(driver, page_number)
+                driver.find_element("css selector", "article")
+            except NoSuchElementException:
+                time_print(f"Encountered a Captcha scraping page {page_number}, trying again.")
+                sleep(5, 15)
+            except TimeoutException:
+                time_print(f"Timed out waiting for page {page_number} to load. trying again.")
+                sleep(15, 30)
+            else:
+                break
+        else:
+            return False
+        return True
+
     def get_total_number_of_result_pages(self) -> int:
         """Gets the total number of result pages for a certain `search_query` and `jobs_per_page`."""
         driver = self.create_driver()
-        time_print("Getting the total number of result pages.")
         t = time.time()
-        try:
-            self.get_url(driver, 1)
-        except TimeoutException:
-            driver.quit()
-            raise ConnectionError(f"Timed out while getting the total number of result pages.")
+        success = self.get_url_retry(driver, 1, "Getting the total number of result pages.")
         self.link_get_took = time.time() - t
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        n_pages = soup.select_one('li[data-test="pagination-mobile"].air3-pagination-mobile').text
+        page_source = driver.page_source if success else None
         driver.quit()
-
-        if not n_pages:
-            if self.headless:
-                time_print(
-                    "Encountered a captcha, terminating the current session and trying normal browser(headless=False).")
-                self.headless = False
-                return self.get_total_number_of_result_pages()
-            else:
-                raise NoSuchElementException(
-                    "Encountered a captcha, this could mean that your IP reputation is low, try again or add a proxy.")
-
+        if not success:
+            raise TimeoutError(
+                "Couldn't get the total number of result pages. If this was due to timeout, please check your"
+                "connection and try again. If it was due to a captcha and `headless` is set to True, try setting it to"
+                "False and try again.")
+        soup = BeautifulSoup(page_source, "html.parser")
+        n_pages = soup.select_one('li[data-test="pagination-mobile"].air3-pagination-mobile').text
         return int(n_pages.split()[-1].replace(",", ""))
 
-    def scrape_pages(self, page_numbers: list | set | None = None) -> None:
+    def _scrape_pages(self, page_numbers: list, action: str = 'scrape') -> None:
         """
         Scrapes all the page numbers contained in `page_number` for their job listings details.
 
@@ -403,42 +439,31 @@ class JobsScraper:
         - On Windows, this method prevents the computer from sleeping (but allows the screen to turn off) during
           the scraping process. The reason for this is that when Windows sleeps, the connection to the webdriver
           is severed, and it can't continue running when the PC wakes up resulting in an error.
-        - The scraped data is available through `jobs_details` attribute.
+        - The scraped data is available through `jobs_details` property.
         - `scrape_jobs` method should be used instead of this because it offers saving and multi-threading
           functionality. This method is intended for internal use, but can still be used by user code.
 
         Parameters
         ----------
-        page_numbers: list, optional
-            A list containing the page numbers to scrape. If None, scrape all the pages from `start_page` to
-            `pages_to_scrape`. Default None
+        page_numbers: list
+            A list containing the page numbers to scrape.
+        action: str
+            The action to perform, "scrape" the data or "update" existing data with any new data. Default "scrape".
 
         See Also
         --------
         scrape_jobs: The preferred method to call.
         """
         driver = self.create_driver()
-        for page in page_numbers or list(range(self.start_page, self.start_page + self.pages_to_scrape)):
+        total_pages = self.start_page + self.pages_to_scrape - 1 if action == 'scrape' else self.last_allowed_page
+        seen_jobs = []
+        consecutive_seens = 0
+        for page in page_numbers:
             if self.seen_page and page > self.seen_page:
                 break
             inhibit_sleep(True)
-            # The following code is to achieve retrying functionality, see https://stackoverflow.com/a/7663441/23524006
-            for retry in range(self.retries):
-                try:
-                    time_print(
-                        f"Scraping page {page} of {self.start_page + self.pages_to_scrape - 1} "
-                        f"(try {retry+1}/{self.retries}).")
-                    self.get_url(driver, page)
-                    driver.find_element("css selector", "article")
-                except NoSuchElementException:
-                    time_print(f"Encountered a Captcha scraping page {page}, trying again.")
-                    sleep(5, 15)
-                except TimeoutException:
-                    time_print(f"Timed out waiting for page {page} to load. trying again.")
-                    sleep(15, 30)
-                else:
-                    break
-            else:
+            if not self.get_url_retry(
+                    driver, page, f"Scraping page {page} of {total_pages}"):
                 self.failed_pages.add(page)
                 continue
 
@@ -447,31 +472,54 @@ class JobsScraper:
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
             jobs = soup.find_all('article')
+            self.pages_to_jobs[action][page] = []
             for i, job in enumerate(jobs):
-                try:
-                    # self.jobs_details.append(parse_one_job(driver, job, i + 1))
-                    job = parse_one_job(driver, job, i + 1)
-                    if job['title'] in self.seen_titles:
-                        self.consecutive_seens += 1
-                        self.seen_jobs.append(job)
-                    else:
-                        for seen_job in self.seen_jobs:
-                            self.jobs_details.append(seen_job)
-                        self.jobs_details.append(job)
-                        self.seen_jobs = []
-                        self.consecutive_seens = 0
-                    self.seen_titles.add(job['title'])
-                    if self.consecutive_seens >= 5:
-                        self.seen_page = page
-                        break
-                except Exception as e:  # noqa
-                    # Most exceptions are caught in `parse_one_job`, but every so often an uncounted for exception is
-                    # raised, they are caught here to not terminate the whole session if just 1 job couldn't be scraped.
-                    pass
+                job = parse_one_job(driver, job, i + 1)
+                description = job['description']
+                if description in self.seen_descriptions:
+                    consecutive_seens += 1
+                    seen_jobs.append(job)
+                else:
+                    consecutive_seens = 0
+                    while seen_jobs:
+                        self.pages_to_jobs[action][page].append(seen_jobs.pop(0))
+                    self.pages_to_jobs[action][page].append(job)
+                self.seen_descriptions.add(description)
+                if consecutive_seens > 5:
+                    self.seen_page = min(page, self.seen_page) if self.seen_page else page
+                    break
+
         inhibit_sleep(False)
         driver.quit()
 
-    def scrape_jobs(self, page_numbers=None, save=True) -> list[dict]:
+    def distribute_work(self, page_numbers: list, action: str = 'scrape') -> None:
+        """Distributes the number of pages to scrape across `self.workers` threads. This function is blocking."""
+        workers = []
+        for page_numbers_chunk in split_list_into_chunks(page_numbers, self.workers):
+            worker = threading.Thread(target=self._scrape_pages, args=(page_numbers_chunk, action))
+            worker.start()
+            workers.append(worker)
+            sleep(5, 10)
+        for worker in workers:
+            worker.join()
+
+    def retry_failed(self, action: str = 'scrape') -> None:
+        """Retry to scrape any failed pages."""
+        if self.failed_pages:
+            time_print("Waiting 30 to 60 seconds before trying to scrape the failed pages...")
+            sleep(30, 60)
+            self.distribute_work(list(self.failed_pages), action)
+            if self.failed_pages:  # Would be empty if all pages were scraped successfully.
+                time_print(f"Failed to scrape the following pages: {self.failed_pages}.")
+
+    def save_data(self) -> None:
+        """Save the scraped data to `save_path` as json."""
+        if self.save_path:
+            time_print(f"Saving to {self.save_path}")
+            with open(self.save_path, 'w') as save_file:
+                json.dump(self.scraped_jobs, save_file)
+
+    def scrape_jobs(self, page_numbers: list | None = None, action: str = 'scrape') -> list[dict]:
         """
         Scrapes `pages_to_scrape` number of pages for their job listings starting at `start_page`. The following
         information is collected about each job listing:
@@ -479,14 +527,18 @@ class JobsScraper:
             - Job description
             - Job skills
             - Job post time as a UNIX timestamp
-            - Number of proposals
             - Job type (Hourly or Fixed)
             - Experience level (entry, intermediate, expert)
             - Time estimate (the estimated time the job is going to take, for example, 1-3 months for an hourly job
               or None for a fixed-price job)
             - Budget (The budget for a fixed-price job or the average hourly rate or None if it's not specified)
+        And the following if the job listing is public (only proposals and location are guaranteed to exist):
+            - Number of proposals
             - Client location
-            - Client total spent (if present)
+            - Client number of posted jobs
+            - Client hire rate
+            - Client average hourly rate
+            - Client total spent
 
         Notes
         -----
@@ -494,85 +546,81 @@ class JobsScraper:
           the scraping process. The reason for this is that when Windows sleeps, the connection to the webdriver
           is severed, and it can't continue running when the PC wakes up resulting in an error.
 
+        Parameters
+        ----------
+        page_numbers: list, optional
+            A list containing the page numbers to scrape. If None, scrape all the pages from `start_page` to
+            `pages_to_scrape`. Default None
+        action: str
+            The action to perform, "scrape" the data or "update" existing data with any new data. Default "scrape".
+
         Returns
         -------
         jobs_details: list[dict]
-            A list of dictionaries containing information about the jobs.
+            A list of dictionaries containing information about the jobs in the order they are presented with on Upwork.
         """
         if page_numbers is None:
             page_numbers = list(range(self.start_page, self.start_page + self.pages_to_scrape))
-        workers = []
-        for page_numbers_chunk in split_list_into_chunks(page_numbers, self.workers):
-            worker = threading.Thread(target=self.scrape_pages, args=(page_numbers_chunk,))
-            worker.start()
-            workers.append(worker)
-            sleep(5, 10)
-        for worker in workers:
-            worker.join()
+        self.distribute_work(page_numbers, action)
+        self.retry_failed(action)
+        if action == 'update':
+            # list() to make a copy of the keys and avoid raising dict changed size during iteration runtime exception.
+            for key in list(self.pages_to_jobs[action]):
+                if self.seen_page and key > self.seen_page:
+                    self.pages_to_jobs[action].pop(key)
+        time_print(f"Scraped {sum(map(len, self.pages_to_jobs[action].values()))} jobs.")
+        self.save_data()
+        return self.scraped_jobs
 
-        if self.failed_pages:
-            time_print("Waiting 30 to 60 seconds before trying to scrape the failed pages...")
-            sleep(30, 60)
-            self.scrape_pages(self.failed_pages)
-            if self.failed_pages:
-                time_print(f"Failed to scrape the following pages: {self.failed_pages}.")
-
-        time_print(f"Scraped {len(self.jobs_details)} jobs.")
-        if self.save_path and save:
-            with open(self.save_path, 'w') as save_file:
-                json.dump(self.jobs_details, save_file)
-        time_print(f"Saved the scraped data to {self.save_path}.")
-
-        return self.jobs_details[::]
-
-    def update_existing(self) -> None:
-        """Updates the existing scraped data with any new job listings."""
-        if not self.jobs_details:
+    def update_existing(self) -> list[dict]:
+        if not self.pages_to_jobs['scrape']:
             if not self.save_path:
                 raise FileNotFoundError(
-                    "The scraped data file was not found and the data isn't in memory."
-                    "If you want to scrape new data call `scrape_jobs` instead.")
-            with open(self.save_path, 'r') as save_file:
-                try:
-                    self.jobs_details = json.load(save_file)
-                    self.seen_titles = {j['title'] for j in self.jobs_details}
-                    self.consecutive_seens = 0
-                    self.seen_jobs = []
-                    self.seen_page = None
-                except json.JSONDecodeError as e:
-                    raise RuntimeError(f"The file at {self.save_path} is not a valid JSON file.") from e
-        page_numbers = list(range(1, self.last_allowed_page + 1))
-        print(split_list_into_chunks(page_numbers, 1))
-        quit()
-        existing_data = self.jobs_details[::]
-        self.jobs_details = []
-        self.scrape_jobs(page_numbers, False)
-        self.jobs_details.extend(existing_data)
-        self.scrape_jobs([], True)  # Just to save.
+                    f"The scraped data isn't saved to a file or loaded in memory."
+                    f"If you want to scrape the data, use `scrape_jobs` instead.")
+            with open(self.save_path) as save_file:
+                loaded_jobs = json.load(save_file)
+                self.seen_descriptions = {job['description'] for job in loaded_jobs}
+                self.pages_to_jobs['scrape'][1] = loaded_jobs
+        self.seen_page = None
+        return self.scrape_jobs(list(range(1, self.last_allowed_page + 1)), 'update')
 
 
-def scraping_cli_entry_point():
+def scraping_cli_entry_point() -> None:
     """The CLI entry point for scraping jobs."""
     parser = argparse.ArgumentParser(
-        description='Scrape Upwork job listings for a given search query.')
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Scrape Upwork job listings for a given search query.")
     parser.add_argument(
-        "-q", '--search-query', help='The query to search for.', required=True)
+        "action", type=str, choices=("scrape", "update"), default="scrape",
+        help="Scrape new jobs, or update existing scraped data with any new job postings")
     parser.add_argument(
-        "-j", "--jobs-per-page", type=int,
-        help="How many jobs should be displayed per page.", choices=[10, 20, 50], default=10)
+        "-q", '--search-query', type=str, required=True,
+        help='The query to search for.')
     parser.add_argument(
-        "-s", "--start-page", type=int, help="The page number to start searching from.", default=1)
+        "-j", "--jobs-per-page", type=int, choices=[10, 20, 50], default=10,
+        help="How many jobs should be displayed per page.")
     parser.add_argument(
-        "-p", "--pages-to-scrape", type=int, help="How many pages to scrape. If not specified, scrape all the pages.")
+        "-s", "--start-page", type=int, default=1,
+        help="The page number to start searching from.")
     parser.add_argument(
-        "-o", "--output", help="Where to save the scraped data.", default='')
+        "-p", "--pages-to-scrape", type=int,
+        help="How many pages to scrape. If not passed, scrape all the pages*"
+             "(there's a limit, see the docs for more info).")
     parser.add_argument(
-        "-r", "--retries", type=int, help="Number of retries when encountering a Captcha before failing.", default=3)
+        "-o", "--output", type=str, default='',
+        help="Where to save the scraped data.")
     parser.add_argument(
-        "--headless", action="store_true", help="Whether to enable headless mode (slower and more detectable).")
+        "-r", "--retries", type=int, default=3,
+        help="Number of retries when encountering a Captcha before failing.")
     parser.add_argument(
-        "-w", "--workers", type=int, help="How many webdriver instances to spin up for scraping.", default=1)
+        "--headless", action="store_true", default=False,
+        help="Whether to enable headless mode (slower and more detectable).")
+    parser.add_argument(
+        "-w", "--workers", type=int, default=1,
+        help="How many webdriver instances to spin up for scraping.")
     args = parser.parse_args()
+    action = args.action
     search_query = args.search_query
     jobs_per_page = args.jobs_per_page
     start_page = args.start_page
@@ -581,12 +629,14 @@ def scraping_cli_entry_point():
     retries = args.retries
     headless = args.headless
     workers = args.workers
-    JobsScraper(
-        search_query, jobs_per_page, start_page, pages_to_scrape, save_path, retries, headless, workers).scrape_jobs()
+    jobs_scraper = JobsScraper(
+        search_query, jobs_per_page, start_page, pages_to_scrape, save_path, retries, headless, workers)
+    jobs_scraper.scrape_jobs() if action == "scrape" else jobs_scraper.update_existing()
 
 
 if __name__ == '__main__':
-    # scraping_cli_entry_point()
-    jobs_scraper = JobsScraper("python", 10, 1, 1, 'python_jobs.json', 3, True, 1)
+    scraping_cli_entry_point()
+    # Direct usage example.
+    # jobs_scraper = JobsScraper("python", 10, 1, 4, 'test.json', 3, True, 2)
     # jobs_scraper.scrape_jobs()
-    jobs_scraper.update_existing()
+    # jobs_scraper.update_existing()
