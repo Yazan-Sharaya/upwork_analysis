@@ -144,7 +144,7 @@ def parse_time(relative_time: str) -> float:
     return int(absolute_time.timestamp())
 
 
-def parse_budget(job_type: str, budget: str) -> int | None:
+def parse_budget(job_type: str, budget: str | None) -> int | None:
     """
     Takes the job type (hourly, fixed-price) budget, which might be the budget in $ for a fixed-price
     job or the estimated time of an hourly job.
@@ -159,6 +159,8 @@ def parse_budget(job_type: str, budget: str) -> int | None:
             min_rate, max_rate = hourly_rate.split(' - ')
             average_rate = int((float(max_rate) + float(min_rate)) / 2)
             return average_rate
+        return None
+    if not budget or '$' not in budget:  # If $ isn't in the budget's text, it means it's "not sure".
         return None
     budget = budget.replace("$", "").split()[0]  # `split` is the easiest way to git rid of all whitespace.
     return int(float(budget.replace(',', '')))
@@ -212,8 +214,6 @@ def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict[str, str | int |
     xp_level = job.select_one(experience_level_selector)
     time_estimate = job.select_one(time_estimate_selector)
     budget = job.select_one(budget_selector)
-    if time_estimate:
-        time_estimate = time_estimate.text.split(',')[0]
 
     job_details = {
         "title": job.select_one(job_title_selector).text,
@@ -222,8 +222,8 @@ def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict[str, str | int |
         "skills": [skill.text for skill in job.select(job_skills_selector)],
         "type": job_type.split(':')[0].split()[0],
         "experience_level": xp_level.text if xp_level else None,
-        "time_estimate": time_estimate,
-        "budget": parse_budget(job_type, budget.text) if budget else None
+        "time_estimate": time_estimate.text.split(',')[0] if time_estimate else None,
+        "budget": parse_budget(job_type, budget.text if budget else None)
     }
 
     remaining_keys = (
