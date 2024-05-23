@@ -466,9 +466,7 @@ class JobsScraper:
                     driver, page, f"Scraping page {page} of {total_pages}"):
                 self.failed_pages.add(page)
                 continue
-
-            if page in self.failed_pages:
-                self.failed_pages.remove(page)
+            self.failed_pages.discard(page)
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
             jobs = soup.find_all('article')
