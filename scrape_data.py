@@ -1,3 +1,4 @@
+"""This module implements `JobsScaper` class that aims to scrape Upwork job listings within certain parameters."""
 from datetime import datetime, timedelta
 import threading
 import argparse
@@ -9,9 +10,9 @@ import time
 
 from seleniumbase.common.exceptions import (
     NoSuchElementException as SBNoSuchElementException, WebDriverException as SBWebDriverException)
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from seleniumbase.undetected import Chrome
 from seleniumbase import Driver
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
@@ -178,7 +179,7 @@ def parse_total_spent(total_spent: str) -> int | None:
 
 def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict[str, str | int | float | None]:
     """
-    Parses one job listing (html) and returns a dictionary containing its information. The collected infromation is:
+    Parses one job listing (html) and returns a dictionary containing its information. The collected information is:
         - Job title
         - Job description
         - Job skills
@@ -571,12 +572,21 @@ class JobsScraper:
         return self.scraped_jobs
 
     def update_existing(self) -> list[dict]:
+        """
+        Update the existing data with any new job listings.
+
+        This function can be called without calling `scrape_jobs` if the data has already been scraped before and is
+        saved at `save_path.
+
+        This function can be called repeatedly to keep updating the existing data, and it saves the data to `save_path`
+        after each call.
+        """
         if not self.pages_to_jobs['scrape']:
             if not self.save_path:
                 raise FileNotFoundError(
-                    f"The scraped data isn't saved to a file or loaded in memory."
-                    f"If you want to scrape the data, use `scrape_jobs` instead.")
-            with open(self.save_path) as save_file:
+                    "The scraped data isn't saved to a file or loaded in memory."
+                    "If you want to scrape the data, use `scrape_jobs` instead.")
+            with open(self.save_path, 'r') as save_file:
                 loaded_jobs = json.load(save_file)
                 self.seen_descriptions = {job['description'] for job in loaded_jobs}
                 self.pages_to_jobs['scrape'][1] = loaded_jobs
