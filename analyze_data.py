@@ -13,6 +13,7 @@ When the script is called directly from the command a line, a new matplotlib sty
 applied.
 """
 from datetime import timedelta
+from typing import Callable
 import argparse
 import time
 import os
@@ -24,7 +25,7 @@ import seaborn as sns
 import pandas as pd
 
 
-def _process_plot(plot_function: callable, fig_num: int, tick_rotation: int | None = None) -> plt.Figure:
+def _process_plot(plot_function: Callable, fig_num: int, tick_rotation: int | None = None) -> plt.Figure:
     """
     Assign a specific figure to each plot that can be retrieved again by other functions in this module and set the
     layout to tight layout to automatically adjust spacing.
