@@ -177,7 +177,7 @@ def parse_total_spent(total_spent: str) -> int | None:
     return int(total_spent)
 
 
-def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict[str, str | int | float | None]:
+def parse_one_job(driver: Chrome, job: Tag, index: int, fast: bool = False) -> dict[str, str | int | float | None]:
     """
     Parses one job listing (html) and returns a dictionary containing its information. The collected information is:
         - Job title
@@ -189,7 +189,7 @@ def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict[str, str | int |
         - Time estimate (the estimated time the job is going to take, for example, 1-3 months for an hourly job
           or None for a fixed-price job)
         - Budget (The budget for a fixed-price job or the average hourly rate or None if it's not specified)
-    And the following if the job listing is public (only proposals and location are guaranteed to exist):
+    And the following if the listing is public and `fast=False` (only proposals and location are guaranteed to exist):
         - Number of proposals
         - Client location
         - Client number of posted jobs
@@ -205,6 +205,9 @@ def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict[str, str | int |
         Beautiful soup tag containing the job html.
     index: int
         The index of the job with respect to the page.
+    fast: bool, optional
+        Whether to use the fast method. The fast method doesn't click on the job listing to scrape the information about
+        the client and number of proposals making it much faster. Default False.
 
     Returns
     -------
@@ -226,6 +229,8 @@ def parse_one_job(driver: Chrome, job: Tag, index: int) -> dict[str, str | int |
         "time_estimate": time_estimate.text.split(',')[0] if time_estimate else None,
         "budget": parse_budget(job_type, budget.text if budget else None)
     }
+    if fast:
+        return job_details
 
     remaining_keys = (
         "proposals", "client_location", "client_jobs_posted",
@@ -269,7 +274,8 @@ class JobsScraper:
             save_path: str | None = None,
             retries: int = 3,
             headless: bool = False,
-            workers: int = 1) -> None:
+            workers: int = 1,
+            fast: bool = False) -> None:
         """
         Scrapes the `jobs_per_page` * `pages_to_scrape` jobs resulting from searching for `search_query`.
 
@@ -305,6 +311,9 @@ class JobsScraper:
         workers: int, optional
             The number of worker threads to launch, the higher the number, the faster the execution and resource
             consumption. Default is 1 (sequential execution).
+        fast: bool, optional
+            Whether to use the fast scraping method. This method can be 10 to 50x times faster but leaves out all
+            the information related to the client (location, total spent, etc) and number of proposals. Default False.
         """
         assert jobs_per_page in (10, 20, 50), "The allowed values for `jobs_per_page` are 10, 20 and 50."
         self.search_query = search_query
@@ -316,6 +325,7 @@ class JobsScraper:
         self.retries = retries
         self.headless = headless
         self.workers = workers
+        self.fast = fast
 
         self.link_get_took = 0
         total_npages = self.get_total_number_of_result_pages()
@@ -348,7 +358,7 @@ class JobsScraper:
         # workers * 7.5 because each new worker waits 5 to 10 extra seconds before it start.
         time_estimate = round(
             (self.link_get_took * self.pages_to_scrape +
-             2.4 * estimated_number_of_jobs +
+             2.4 * estimated_number_of_jobs * (not self.fast) +
              activate_workers * 7.5) / activate_workers / 60, 1)
         print(
             f"Scraping spec\n-------------\n"
@@ -357,6 +367,7 @@ class JobsScraper:
             f"estimated total number of jobs: {estimated_number_of_jobs}\n"
             f"Retries when detected: {self.retries}\n"
             f"Number of workers: {activate_workers}\n"
+            f"Fast method: {self.fast}\n"
             f"ETA: {time_estimate} minutes\n"
             f"{f'Saving to {self.save_path}' if self.save_path else 'Not saving the results'}")
 
@@ -472,8 +483,9 @@ class JobsScraper:
             soup = BeautifulSoup(driver.page_source, "html.parser")
             jobs = soup.find_all('article')
             self.pages_to_jobs[action][page] = []
+            t = time.time()
             for i, job in enumerate(jobs):
-                job = parse_one_job(driver, job, i + 1)
+                job = parse_one_job(driver, job, i + 1, self.fast)
                 description = job['description']
                 if description in self.seen_descriptions:
                     consecutive_seens += 1
@@ -487,6 +499,7 @@ class JobsScraper:
                 if consecutive_seens > 5:
                     self.seen_page = min(page, self.seen_page) if self.seen_page else page
                     break
+            print(round(time.time() - t, 3))
 
         inhibit_sleep(False)
         driver.quit()
@@ -627,6 +640,10 @@ def scraping_cli_entry_point() -> None:
     parser.add_argument(
         "-w", "--workers", type=int, default=1,
         help="How many webdriver instances to spin up for scraping.")
+    parser.add_argument(
+        "-f", "--fast", action="store_true", default=False,
+        help="Whether to use the fast scraping method. It can be 10 to 50x faster "
+             "but leaves out all client information and number of proposals.")
     args = parser.parse_args()
     action = args.action
     search_query = args.search_query
@@ -637,14 +654,15 @@ def scraping_cli_entry_point() -> None:
     retries = args.retries
     headless = args.headless
     workers = args.workers
+    fast = args.fast
     jobs_scraper = JobsScraper(
-        search_query, jobs_per_page, start_page, pages_to_scrape, save_path, retries, headless, workers)
+        search_query, jobs_per_page, start_page, pages_to_scrape, save_path, retries, headless, workers, fast)
     jobs_scraper.scrape_jobs() if action == "scrape" else jobs_scraper.update_existing()
 
 
 if __name__ == '__main__':
     scraping_cli_entry_point()
     # Direct usage example.
-    # jobs_scraper = JobsScraper("python", 10, 1, 4, 'test.json', 3, True, 2)
+    # jobs_scraper = JobsScraper("python", 10, 1, 4, 'test.json', 3, True, 2, False)
     # jobs_scraper.scrape_jobs()
     # jobs_scraper.update_existing()
