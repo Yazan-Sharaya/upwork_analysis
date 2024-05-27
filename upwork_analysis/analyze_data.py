@@ -258,7 +258,7 @@ def perform_analysis(dataset_path: str, save_plots_dir: str | None = None, show_
         plt.show()
 
 
-if __name__ == '__main__':
+def analysis_cli_entry_point() -> None:
     sns.set(style='whitegrid', palette="deep", font_scale=1.1, rc={"figure.figsize": [10, 6]})
     parser = argparse.ArgumentParser(
         description="Perform data analysis on the data collected by scraping upwork and plot the data.")
@@ -273,3 +273,9 @@ if __name__ == '__main__':
     save_directory = args.save_dir
     show = args.show
     perform_analysis(scraped_data_path, save_directory, show)
+
+
+if __name__ == '__main__':
+    analysis_cli_entry_point()
+    # Direct usage example
+    # perform_analysis("saved_jobs.json", "save_dir/", True)
