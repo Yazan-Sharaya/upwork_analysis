@@ -1,9 +1,10 @@
 """
 This module implements functions to analyze and visualize the data collected using the `scrape_data` module.
 
-The `perform_analysis` function performs the full suite of analysis at one go. If you want finer control over
+The `perform_analysis` function performs the full suite of analysis in one go. If you want finer control over
 data processing, analysis and plotting, you can call the functions separately and modify their default arguments.
-The plots aren't shown by default when calling the functions separately, you need to call the `plt.show`.
+
+The plots aren't shown by default when calling the functions separately, you need to call `plt.show`.
 
 The plot_* functions return the figure if you wish to perform any additional customization to it.
 
