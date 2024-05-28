@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "upwork_analysis"
+dynamic = ["version"]
+authors = [{ name = "Yazan Sharaya", email = "yazan.sharaya.yes@gmail.com" }]
+description = "A Python package that scrapes and analyzes Upwork job listings."
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.7"
+dependencies = [
+    "seleniumbase",
+    "beautifulsoup4",
+    "scikit-learn",
+    "pandas",
+    "scipy",
+    "seaborn"
+]
+classifiers = [
+    "Environment :: Console",
+    "Framework :: Jupyter",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Typing :: Typed"
+]
+keywords = ["scraping", "undetected", "selenium", "crawling", "automation", "data analysis"]
+
+[project.urls]
+Repostiroy = "https://github.com/Yazan-Sharaya/upwork_analysis"
+
+[project.scripts]
+scrape-upwork = "upwork_analysis:scrape_data.scraping_cli_entry_point"
+analyze-upwork = "upwork_analysis:analyze_data.analysis_cli_entry_point"
+
+[tool.setuptools]
+packages = ["upwork_analysis"]
+
+[tool.setuptools.package-data]
+"upwork_analysis" = ["py.typed", "data_analysis.ipynb"]
+
+[tool.setuptools.dynamic]
+version = {attr = "upwork_analysis.__version__"}
