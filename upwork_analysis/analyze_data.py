@@ -117,9 +117,12 @@ def plot_highest_paying_countries(df: pd.DataFrame, n: int = 15) -> plt.Figure:
         .mean()
         .reset_index()
         .sort_values('budget', ascending=False)
+        .dropna(subset=['budget'])
         .head(n)
     )
     top_countries['client_location'] = top_countries['client_location'].astype('string')
+    if not len(top_countries):
+        top_countries = pd.DataFrame({'client_location': 'NA', 'budget': 0}, index=[0])
     # Convert category dtype to string because seaborn will display all the categories even if they are not
     # present in chosen dataframe, this is probably a bug with seaborn.
     return _process_plot(lambda: sns.barplot(top_countries, x='client_location', y='budget'), 3, 90)
@@ -199,6 +202,9 @@ def interest_df(skills_df: pd.DataFrame, skills_of_interest: list | None = None)
     """Create a dataframe that only contains skill, budget and proposals columns and each row contains one skill."""
     if not skills_of_interest:
         skills_of_interest = get_skills_of_interest(skills_df=skills_df)
+    if not skills_of_interest:
+        # If the above call resulted in an empty list, it means there isn't enough data to find any relationship.
+        skills_of_interest = list(get_most_common_skills(skills_df).keys())[0]
     df_melted = skills_df.melt(
         id_vars=['budget', 'proposals'], value_vars=skills_of_interest, var_name='skill', value_name='presence')
     # Filter only the rows where the skill is present
