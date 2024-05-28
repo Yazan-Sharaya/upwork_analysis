@@ -1,4 +1,6 @@
 """This module implements `JobsScaper` class that aims to scrape Upwork job listings within certain parameters."""
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 import threading
 import argparse
@@ -327,7 +329,7 @@ class JobsScraper:
         self.workers = workers
         self.fast = fast
 
-        self.link_get_took = 0
+        self.link_get_took = 0.
         total_npages = self.get_total_number_of_result_pages()
 
         # Upwork limits the number of pages the user can access, and the limit is dependent on the number of jobs per
@@ -346,9 +348,9 @@ class JobsScraper:
 
         self.pages_to_jobs: dict[str, dict[int, list[dict[str, str | int | float | None]]]] = {
             'scrape': {}, 'update': {}}
-        self.failed_pages = set()
+        self.failed_pages: set[int] = set()
 
-        self.seen_descriptions = set()
+        self.seen_descriptions: set[str] = set()
         self.seen_page = None
 
         activate_workers = len(  # To get the actual number of how many workers there will be.
@@ -483,7 +485,6 @@ class JobsScraper:
             soup = BeautifulSoup(driver.page_source, "html.parser")
             jobs = soup.find_all('article')
             self.pages_to_jobs[action][page] = []
-            t = time.time()
             for i, job in enumerate(jobs):
                 job = parse_one_job(driver, job, i + 1, self.fast)
                 description = job['description']
@@ -499,7 +500,6 @@ class JobsScraper:
                 if consecutive_seens > 5:
                     self.seen_page = min(page, self.seen_page) if self.seen_page else page
                     break
-            print(round(time.time() - t, 3))
 
         inhibit_sleep(False)
         driver.quit()
