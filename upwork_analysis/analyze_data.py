@@ -13,6 +13,9 @@ To save the plots after creating them, call `save_all_figures` and pass it a dir
 When the script is called directly from the command a line, a new matplotlib style is set. Otherwise, no custom style is
 applied.
 """
+from __future__ import annotations
+from typing import Any
+
 from datetime import timedelta
 from typing import Callable
 import argparse
@@ -41,6 +44,14 @@ def _process_plot(plot_function: Callable, fig_num: int, tick_rotation: int | No
     return fig
 
 
+def _fixed_boxplot(x: Any, y: Any, *args: Any, label: Any = None, **kwargs: dict[str, Any]) -> None:
+    """Earlier versions of matplotlib and seaborn had an error when mapping `boxplot` to `FacetGrid`, this is a fix."""
+    try:  # For newer versions.
+        sns.boxplot(x=x, y=y, *args, **kwargs, label=label)
+    except TypeError:  # For older versions.
+        sns.boxplot(x=x, y=y, *args, **kwargs, labels=[label])
+
+
 def read_dataset(path: str) -> pd.DataFrame:
     """Read the data in `path` into a dataframe, assign appropriate dtypes to the columns and drop duplicates."""
     df = pd.read_json(path).convert_dtypes()
@@ -57,7 +68,7 @@ def read_dataset(path: str) -> pd.DataFrame:
 
 def filter_df(df: pd.DataFrame) -> pd.DataFrame:
     """Drop any rows containing NA in "budget" or "proposals" columns and caps the maximum budget to 99 percentile."""
-    filtered_df = df.dropna(subset=['budget', 'proposals'], ignore_index=True).copy()
+    filtered_df = df.dropna(subset=['budget', 'proposals']).reset_index(drop=True)
     budget_cap = int(filtered_df['budget'].quantile(0.99))
     filtered_df['budget'] = filtered_df['budget'].clip(upper=budget_cap)
     return filtered_df
@@ -116,7 +127,7 @@ def plot_highest_paying_countries(df: pd.DataFrame, n: int = 15) -> plt.Figure:
 
 def get_most_common_skills(df: pd.DataFrame, n: int | None = None) -> dict[str, int]:
     """Return a dict containing the `n` most common skills ordered from most to least frequent and their count."""
-    skills_counter = {}
+    skills_counter: dict[str, int] = {}
     for skills_set in df['skills']:
         for skill in skills_set:
             skills_counter[skill] = skills_counter.get(skill, 0) + 1
@@ -127,8 +138,10 @@ def get_most_common_skills(df: pd.DataFrame, n: int | None = None) -> dict[str, 
 
 def plot_most_common_skills(df: pd.DataFrame, n: int | None = 20) -> plt.Figure:
     """Plots the most common skills and how many times they occurred."""
+    # Earlier versions of seaborn couldn't directly take dicts as input. This is a fix, so it can work on Python 3.7.
+    skill_counts_df = pd.DataFrame(get_most_common_skills(df, n), index=[0])
     return _process_plot(lambda: sns.barplot(
-        get_most_common_skills(df, n), orient='h').set(title="Skills count", xlabel="Skill", ylabel="Count"), 4)
+        skill_counts_df, orient='h').set(title="Skills count", xlabel="Skill", ylabel="Count"), 4)
 
 
 def transform_to_binary_skills(df: pd.DataFrame) -> pd.DataFrame:
@@ -151,10 +164,13 @@ def get_skills_correlated_with_budget(skills_df: pd.DataFrame, corr_value: float
         The `skills_df` should be the transformed dataframe that contains each skill as a column. This can be obtained
         using the `transform_to_binary_skills` function.
     """
+    blacklist_columns = [
+        'title', 'description', 'time', 'skills', 'type', 'experience_level', 'time_estimate', 'budget', 'proposals',
+        'client_location', 'client_jobs_posted', 'client_hire_rate', 'client_hourly_rate', 'client_total_spent']
     high_budget_corr_skills = []
     for column_name in skills_df.columns:
         skill_column = skills_df[column_name]
-        if skill_column.dtype != object and skill_column.unique().tolist() == [0, 1]:  # Only skill columns satisfy this
+        if skill_column.name not in blacklist_columns:
             corr, p_value = spearmanr(skill_column, skills_df['budget'])
             if p_value <= 0.05 and corr >= corr_value:
                 high_budget_corr_skills.append(column_name)
@@ -201,7 +217,7 @@ def plot_skills_and_budget(
     g = sns.FacetGrid(
         df_melted, col="proposals", hue='proposals', col_wrap=2, height=8, sharex=False, sharey=False,
         col_order=['Less than 5', '5 to 10', '10 to 15', '15 to 20', '20 to 50', '50+'])
-    f2 = _process_plot(lambda: g.map(sns.boxplot, "skill", "budget", order=skills_of_interest), 6, 90)
+    f2 = _process_plot(lambda: g.map(_fixed_boxplot, "skill", "budget", order=skills_of_interest), 6, 90)
     f2.suptitle('Distribution of Budgets by Skill Presence and Number of Proposals')
     return f1, f2
 
